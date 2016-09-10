@@ -1,99 +1,236 @@
 #include <Adafruit_NeoPixel.h>
 
-// http://hyperphysics.phy-astr.gsu.edu/hbase/waves/watwav2.html
+// PINOUT
 
-// v is proportional to sqrt(l tanh(d/l)) - d is water depth
-// if I care about that, I probably need to precompute it, too.
+const byte pixelPin = 6;
+const byte hitidePin = 7;
+const byte lotidePin = 8;
+const byte infoPin = 13;
+const byte potPin = A3;
 
-const int sampleSize = 50;
-float sampleValue[sampleSize];
+/* 200 is a lot, but I'm working on the assumption that we will be stringing a few strands together. */
 
-const int nPixels = 50;
-
-class SincPulse {
-    float width = 1;
-    float pos = 0;
-    float v = 0;
-    uint32_t startt;
-
-  public:
-    void start() {
-      width = 20;
-      v = 1;
-      startt = millis();
-    }
-
-    void update() {
-      pos = (millis() - startt) / 1000.0; // seconds
-      pos *= v; // pixels per second
-      pos -= width; // offset to begin whole of pulse before strip start
-    }
-
-    float y(float x) {
-      x -= pos; // position of x along the current pulse;
-      x /= width; // position within the puls
-      x *= sampleSize; // position within the sync sample
-      if (x < 0 || x >= sampleSize - 1) return 0;
-      int fl = floor(x); // lower sample
-      return sampleValue[fl] * (1 - (x - fl)) + sampleValue[fl + 1] * (x - fl); // interpolate
-    }
-};
-
-SincPulse pulse;
+const int nPixels = 200;
 
 const Adafruit_NeoPixel pixels(nPixels, 6,
-                               //  NEO_RGB + NEO_KHZ800); // Neopixel strip
-                               NEO_GRB + NEO_KHZ800); // light strip
+                               NEO_RGB + NEO_KHZ800);   // value for the individual strip thing
+//                               NEO_GRB + NEO_KHZ800);   // value for the neopixel string
+
+
+const uint32_t buttonPauseMs = 1000;
+uint32_t buttonChangeMs = 0;
+byte buttonState = 0;
+
+float hitideBrighness = 1;
+float lotideBrighness = .1;
+float baseSpeed = 1;
+
+enum State {
+  DRAWING = 0,
+  ADJUSTING_LOTIDE = 1,
+  ADJUSTING_HITIDE = 2,
+  ADJUSTING_SPEED = 3
+} state = DRAWING;
+
 
 void setup() {
-  Serial.begin(115200);
+  // put your setup code here, to run once:
 
-  precompute_sample();
-  pinMode(11, INPUT_PULLUP);
+  pinMode(pixelPin, OUTPUT);
+  pinMode(infoPin, OUTPUT);
+  pinMode(hitidePin, INPUT_PULLUP);
+  pinMode(lotidePin, INPUT_PULLUP);
+  pinMode(potPin, INPUT);
+
   pixels.begin();
   pixels.clear();
   pixels.show();
-  pulse.start();
+
+  Serial.begin(115200);
+  while (!Serial);
+  Serial.print("Starting sketch ...");
+  delay(500);
+  Serial.println(" now.");
 }
 
 void loop() {
-  {
-    static int v = HIGH;
-    int vWas = v;
-    v = digitalRead(11);
-    if (v == LOW && vWas == HIGH) {
-      pulse.start();
-    }
+  read_buttons();
+
+  switch (state) {
+    case DRAWING: break;
+    case ADJUSTING_LOTIDE:
+      lotideBrighness = analogRead(potPin) / 1023.0;
+      Serial.println(lotideBrighness);
+      break;
+    case ADJUSTING_HITIDE:
+      hitideBrighness = analogRead(potPin) / 1023.0;
+      Serial.println(hitideBrighness);
+      break;
+    case ADJUSTING_SPEED:
+      // speed goes from times 10 to one tenth. Maybe that's too much adjustment - we'll see what it looks like.
+      baseSpeed =  exp((analogRead(potPin) - 512.0) / 512.0 * 2.302585092994046);
+      Serial.println(baseSpeed);
+      break;
   }
 
-  {
-    static uint32_t tt;
-    if (pixels.canShow()) {
-      tt = millis();
-      pulse.update();
-      for (int x = 0; x < nPixels; x++) {
-        float y = pulse.y(x);
-        if (y >= 1) {
-          pixels.setPixelColor(x, cc(1, 0, 0));
-        }
-        else if (y <= -1) {
-          pixels.setPixelColor(x, cc(0, 0, 1));
-        }
-        else if (y == 0) {
-          pixels.setPixelColor(x, 0);
-        }
-        else if (y > 0) {
-          pixels.setPixelColor(x, cc(0, y, y));
-        }
-        else {
-          pixels.setPixelColor(x, cc(-y, -y, 0));
-        }
-      }
-      pixels.show();
-    }
-  }
-
+  draw();
 }
+
+void read_buttons() {
+  byte buttonStateWas = buttonState;
+
+  buttonState = (digitalRead(lotidePin) == LOW ? 1 : 0)  | (digitalRead(hitidePin) == LOW ? 2 : 0);
+ if (buttonStateWas != buttonState) {
+
+    Serial.print(buttonStateWas);
+    Serial.print(' ');
+    Serial.print(buttonState);
+    Serial.println();
+    
+    }
+    
+  if (buttonState == 0) {
+    digitalWrite(infoPin, LOW);
+    state = DRAWING;
+  }
+  else if (buttonStateWas != buttonState) {
+    buttonChangeMs = millis();
+    digitalWrite(infoPin, HIGH);
+    state = DRAWING;
+  }
+  else if (millis() - buttonChangeMs >= buttonPauseMs) {
+    digitalWrite(infoPin, LOW);
+    state = buttonState & 3; // the button state bitmask matches the state enum
+  }
+}
+
+#define PHI  1.6180339887499
+#define PI  3.141592653589793
+
+
+class Sine {
+  float speedHz = 1; // cycles per second
+  float theta = 0; // current value;
+  float wavelengthPix = 1; // wavelength in pixels
+
+  static Sine* head;
+  Sine* next;
+
+  void advanceMicros(float us) {
+    theta += 2 * PI * us / 1e6 * speedHz;
+    while(theta < 0) theta += 2 * PI;
+    while(theta >= 2 * PI) theta -= 2 * PI;
+  }
+
+public:
+  Sine(float speedHz, float wavelengthPix)
+  : speedHz(speedHz), wavelengthPix(wavelengthPix)
+  {
+    next = head;
+    head = this; 
+  }
+
+
+  static void advanceAllMicros(float us) {
+    for(Sine *p = head; p; p = p->next) {
+      p->advanceMicros(us);
+    }
+  }
+
+  float v(int pix) {
+      return sin(theta + pix/wavelengthPix *  2 * PI) / 2 + .5;
+  }
+
+  float v_for_mul(int pix) {
+      return sin(theta + pix/wavelengthPix *  2 * PI);
+  }
+  
+};
+
+Sine *Sine::head = NULL;
+
+uint32_t mostRecentDrawUs = 0;
+
+// we have ripples with a wavelength of the golden ratio.
+Sine rippleBase(1.0/5, 1/PHI);
+// the ripples are multiplied in amplitude by a sine that moves quickly and has a long wavelength
+Sine rippleMul(1, 30);
+
+// the tide has a cycle of once every 30 minutes. This means that we compress a day into an hour
+Sine tide(1.0/60/30, 1);
+
+// The waves moving in have a long wavelenght and move reasonably fast
+Sine waveIn(.15, 20);
+// The waves moving out have a slightly shorter wavelenght and move slower in the opposote direction
+Sine waveOut(-.1, 17.1234);
+
+// the waves move in and out nice and slow to make it obvious. I use a wavlenght of 2 pixels and sampe the amplitude at 0 and 1
+// to give me the weighting of wave in vs wave out.  
+
+Sine waveInOut(1.0/120, 2);
+
+void draw() {
+  if(!pixels.canShow()) return;
+  delay(1); // have at least a little delay
+  uint32_t us = micros();
+  Sine::advanceAllMicros((us - mostRecentDrawUs) * baseSpeed);
+  mostRecentDrawUs = us;
+
+  float waveInWeight = waveInOut.v(0);
+  float waveOutWeight = 1 - waveOutWeight;
+
+  float tideV;
+
+  if(state == ADJUSTING_HITIDE) {
+    tideV = 1; // force high tide
+  }
+  else if(state == ADJUSTING_LOTIDE) {
+    tideV = 0; // force low tide
+  }
+  else {
+    tideV = tide.v(0);
+  }
+
+  tideV = (tideV * hitideBrighness) + ((1-tideV) * lotideBrighness); 
+
+  for(int i = 0; i<nPixels; i++) {
+    float rippleV = rippleBase.v_for_mul(i) * (rippleMul.v(i)*1+1)/2;
+    // correct rippleV
+    rippleV = rippleV/2 + .5;
+
+    float inV = (waveIn.v(i)) * waveInWeight * tideV;
+    float outV = (waveOut.v(i)) * waveOutWeight * tideV;
+    
+    float r,g,b;
+
+    // base colour - a nice sea-green maybe a bit washed out
+    // the brighness is .3, so the other components have .7 to play with 
+    r = .1;
+    g = .3;
+    b = .1;
+
+    // ripple colour: blue, and increase saturation. 
+
+    r += -.05 * rippleV;
+    b += .2 * rippleV;
+
+    // wave in: a bright green
+
+    g += inV * .7;
+    b += inV * .2;
+
+    // wave out, a dimmer cyan
+
+    g += outV * .5;
+    b += outV * .5;
+    
+    pixels.setPixelColor(i, cc(r,g,b));
+
+    
+  }
+  pixels.show();
+}
+
 
 
 
@@ -134,23 +271,5 @@ uint32_t cc(float r, float g, float b) {
            pgm_read_byte(&gamma8[gg]),
            pgm_read_byte(&gamma8[bb])
          );
-}
-
-void precompute_sample() {
-  for (int i = 0; i < sampleSize; i++) {
-#if 0
-    // test pulse
-    sampleValue[i] = ((float)i) / sampleSize * 3 - 1.5;
-
-#else
-    float x = ((float)i / (float)sampleSize * 2 - 1);
-
-    sampleValue[i] = 
-    sin(x*2*3.14159)   // a sine wave. 
-    * exp(-2.5 * x * x); // gaussian window width seems to be about right
-
-#endif
-    Serial.println(sampleValue[i] );
-  }
 }
 
