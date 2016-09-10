@@ -45,12 +45,6 @@ void setup() {
   pixels.begin();
   pixels.clear();
   pixels.show();
-
-  Serial.begin(115200);
-  while (!Serial);
-  Serial.print("Starting sketch ...");
-  delay(500);
-  Serial.println(" now.");
 }
 
 void loop() {
@@ -60,16 +54,13 @@ void loop() {
     case DRAWING: break;
     case ADJUSTING_LOTIDE:
       lotideBrighness = analogRead(potPin) / 1023.0;
-      Serial.println(lotideBrighness);
       break;
     case ADJUSTING_HITIDE:
       hitideBrighness = analogRead(potPin) / 1023.0;
-      Serial.println(hitideBrighness);
       break;
     case ADJUSTING_SPEED:
       // speed goes from times 10 to one tenth. Maybe that's too much adjustment - we'll see what it looks like.
       baseSpeed =  exp((analogRead(potPin) - 512.0) / 512.0 * 2.302585092994046);
-      Serial.println(baseSpeed);
       break;
   }
 
@@ -80,14 +71,6 @@ void read_buttons() {
   byte buttonStateWas = buttonState;
 
   buttonState = (digitalRead(lotidePin) == LOW ? 1 : 0)  | (digitalRead(hitidePin) == LOW ? 2 : 0);
- if (buttonStateWas != buttonState) {
-
-    Serial.print(buttonStateWas);
-    Serial.print(' ');
-    Serial.print(buttonState);
-    Serial.println();
-    
-    }
     
   if (buttonState == 0) {
     digitalWrite(infoPin, LOW);
